@@ -1,0 +1,232 @@
+//@version=5
+indicator("Layer 1: Malaysian SNR Framework", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// ============================================================================
+// LAYER 1: MALAYSIAN SNR FRAMEWORK - KEY LEVELS DETECTION
+// ============================================================================
+// Purpose: Identify WHERE are the important Key Levels
+// - Malaysian SNR (Support/Resistance)
+// - Fresh / Unfresh / Flip status
+// - Major Structural Levels (Swing Highs/Lows)
+// ============================================================================
+
+// ============================================================================
+// INPUT PARAMETERS
+// ============================================================================
+
+// Swing Detection
+swingLength = input.int(5, title="Swing Detection Length", minval=2, maxval=50)
+
+// Major Structure Sensitivity
+majorSwingLength = input.int(10, title="Major Swing Length", minval=5, maxval=50)
+minSwingSize = input.float(50, title="Minimum Swing Size (pips)", minval=10)
+
+// Retest Detection
+retestThreshold = input.float(10, title="Retest Threshold (pips)", minval=1, maxval=100)
+
+// Display Options
+showSupportLines = input.bool(true, title="Show Support Lines")
+showResistanceLines = input.bool(true, title="Show Resistance Lines")
+showMajorStructure = input.bool(true, title="Show Major Structure Levels")
+showLabels = input.bool(true, title="Show Status Labels (Fresh/Unfresh/Flip)")
+showPriceLevel = input.bool(true, title="Show Price Level Indicator")
+
+// Colors
+colorSupport = input.color(color.new(color.blue, 60), title="Support Color")
+colorResistance = input.color(color.new(color.red, 60), title="Resistance Color")
+colorMajorHigh = input.color(color.new(color.orange, 70), title="Major High Color")
+colorMajorLow = input.color(color.new(color.purple, 70), title="Major Low Color")
+colorFresh = input.color(color.new(color.green, 0), title="Fresh Label Color")
+colorUnfresh = input.color(color.new(color.yellow, 0), title="Unfresh Label Color")
+colorFlip = input.color(color.new(color.fuchsia, 0), title="Flip Label Color")
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+// Detect if current close is within threshold of a price level
+f_isNearLevel(price, level, threshold) =>
+    math.abs(price - level) <= threshold
+
+// Detect if price has broken above level (with confirmation)
+f_breakAbove(level, threshold) =>
+    close > level + threshold and close[1] <= level + threshold
+
+// Detect if price has broken below level (with confirmation)
+f_breakBelow(level, threshold) =>
+    close < level - threshold and close[1] >= level - threshold
+
+// Get the pip value for the symbol
+f_getPipValue() =>
+    syminfo.type == "forex" ? syminfo.pointvalue * 10 : 1
+
+// ============================================================================
+// SWING DETECTION - IDENTIFY PIVOT POINTS
+// ============================================================================
+
+// Detect Swing Low (Support/V-Level)
+f_detectSwingLow(len) =>
+    low[len] == ta.lowest(len * 2 + 1)
+
+// Detect Swing High (Resistance/A-Level)
+f_detectSwingHigh(len) =>
+    high[len] == ta.highest(len * 2 + 1)
+
+// Get the actual swing price (Open/Close, not wick)
+f_getSwingLowPrice(len) =>
+    math.min(open[len], close[len])
+
+f_getSwingHighPrice(len) =>
+    math.max(open[len], close[len])
+
+// ============================================================================
+// STRUCTURAL LEVEL DETECTION
+// ============================================================================
+
+// Detect Major Swing Low (significant support)
+isSwingLow = f_detectSwingLow(swingLength)
+isMajorSwingLow = f_detectSwingLow(majorSwingLength)
+
+// Detect Major Swing High (significant resistance)
+isSwingHigh = f_detectSwingHigh(swingLength)
+isMajorSwingHigh = f_detectSwingHigh(majorSwingLength)
+
+// Get current prices
+swingLowPrice = f_getSwingLowPrice(swingLength)
+swingHighPrice = f_getSwingHighPrice(swingLength)
+majorSwingLowPrice = f_getSwingLowPrice(majorSwingLength)
+majorSwingHighPrice = f_getSwingHighPrice(majorSwingLength)
+
+// ============================================================================
+// FRESH / UNFRESH / FLIP STATUS TRACKING
+// ============================================================================
+
+var array<float> supportLevels = array.new<float>()
+var array<float> resistanceLevels = array.new<float>()
+var array<string> levelStatus = array.new<string>()
+var array<int> levelBars = array.new<int>()
+
+pipValue = f_getPipValue()
+thresholdPrice = retestThreshold * pipValue
+
+// Add new support level if detected
+if isSwingLow and array.size(supportLevels) == 0 or (isSwingLow and math.abs(swingLowPrice - array.get(supportLevels, array.size(supportLevels) - 1)) > thresholdPrice)
+    array.push(supportLevels, swingLowPrice)
+    array.push(levelStatus, "Fresh")
+    array.push(levelBars, bar_index)
+
+// Add new resistance level if detected
+if isSwingHigh and array.size(resistanceLevels) == 0 or (isSwingHigh and math.abs(swingHighPrice - array.get(resistanceLevels, array.size(resistanceLevels) - 1)) > thresholdPrice)
+    array.push(resistanceLevels, swingHighPrice)
+    array.push(levelStatus, "Fresh")
+    array.push(levelBars, bar_index)
+
+// Update status: Fresh → Unfresh when retested
+if array.size(supportLevels) > 0
+    for i = 0 to array.size(supportLevels) - 1
+        level = array.get(supportLevels, i)
+        status = array.get(levelStatus, i)
+        if status == "Fresh" and f_isNearLevel(close, level, thresholdPrice)
+            array.set(levelStatus, i, "Unfresh")
+
+if array.size(resistanceLevels) > 0
+    for i = 0 to array.size(resistanceLevels) - 1
+        level = array.get(resistanceLevels, i)
+        idx = array.size(supportLevels) + i
+        status = array.get(levelStatus, idx)
+        if status == "Fresh" and f_isNearLevel(close, level, thresholdPrice)
+            array.set(levelStatus, idx, "Unfresh")
+
+// ============================================================================
+// FLIP DETECTION (Broken Level becomes opposite)
+// ============================================================================
+
+var array<float> flipLevels = array.new<float>()
+var array<string> flipType = array.new<string>()
+
+// Support broken → becomes Resistance (Flip)
+if array.size(supportLevels) > 0
+    lastSupport = array.get(supportLevels, array.size(supportLevels) - 1)
+    lastStatus = array.get(levelStatus, array.size(supportLevels) - 1)
+    if (lastStatus == "Fresh" or lastStatus == "Unfresh") and f_breakBelow(lastSupport, thresholdPrice)
+        array.push(flipLevels, lastSupport)
+        array.push(flipType, "Flip-R")
+        array.set(levelStatus, array.size(supportLevels) - 1, "Flip")
+
+// Resistance broken → becomes Support (Flip)
+if array.size(resistanceLevels) > 0
+    lastResistance = array.get(resistanceLevels, array.size(resistanceLevels) - 1)
+    lastStatusIdx = array.size(supportLevels) + array.size(resistanceLevels) - 1
+    lastStatus = array.get(levelStatus, lastStatusIdx)
+    if (lastStatus == "Fresh" or lastStatus == "Unfresh") and f_breakAbove(lastResistance, thresholdPrice)
+        array.push(flipLevels, lastResistance)
+        array.push(flipType, "Flip-S")
+        array.set(levelStatus, lastStatusIdx, "Flip")
+
+// ============================================================================
+// VISUALIZATION
+// ============================================================================
+
+// Draw Support Levels
+if showSupportLines and array.size(supportLevels) > 0
+    for i = 0 to array.size(supportLevels) - 1
+        level = array.get(supportLevels, i)
+        barNum = array.get(levelBars, i)
+        line.new(barNum, level, bar_index, level, extend=extend.right, color=colorSupport, width=2)
+
+// Draw Resistance Levels
+if showResistanceLines and array.size(resistanceLevels) > 0
+    for i = 0 to array.size(resistanceLevels) - 1
+        level = array.get(resistanceLevels, i)
+        barNum = array.get(levelBars, array.size(supportLevels) + i)
+        line.new(barNum, level, bar_index, level, extend=extend.right, color=colorResistance, width=2)
+
+// Draw Major Structural Levels
+if showMajorStructure
+    if isMajorSwingLow
+        line.new(bar_index - majorSwingLength, majorSwingLowPrice, bar_index, majorSwingLowPrice, extend=extend.right, color=colorMajorLow, width=3, style=line.style_dashed)
+    if isMajorSwingHigh
+        line.new(bar_index - majorSwingLength, majorSwingHighPrice, bar_index, majorSwingHighPrice, extend=extend.right, color=colorMajorHigh, width=3, style=line.style_dashed)
+
+// Draw Status Labels
+if showLabels
+    yOffset = high * 0.001
+    
+    if array.size(supportLevels) > 0
+        lastSupport = array.get(supportLevels, array.size(supportLevels) - 1)
+        lastStatus = array.get(levelStatus, array.size(supportLevels) - 1)
+        labelColor = lastStatus == "Fresh" ? colorFresh : lastStatus == "Unfresh" ? colorUnfresh : colorFlip
+        label.new(bar_index, lastSupport - yOffset, lastStatus, color=labelColor, style=label.style_label_up, textcolor=color.white, size=size.small)
+    
+    if array.size(resistanceLevels) > 0
+        lastResistance = array.get(resistanceLevels, array.size(resistanceLevels) - 1)
+        lastStatusIdx = array.size(supportLevels) + array.size(resistanceLevels) - 1
+        lastStatus = array.get(levelStatus, lastStatusIdx)
+        labelColor = lastStatus == "Fresh" ? colorFresh : lastStatus == "Unfresh" ? colorUnfresh : colorFlip
+        label.new(bar_index, lastResistance + yOffset, lastStatus, color=labelColor, style=label.style_label_down, textcolor=color.white, size=size.small)
+
+// Draw Price Level Indicator
+if showPriceLevel
+    priceText = "Price: " + str.tostring(close, format.price)
+    label.new(bar_index, high + (high - low) * 0.05, priceText, color=color.gray, style=label.style_label_center, textcolor=color.white, size=size.small)
+
+// ============================================================================
+// INFO TABLE (Optional - shows current state)
+// ============================================================================
+
+var table infoTable = table.new(position=position.top_right, columns=2, rows=5, bgcolor=color.new(color.black, 80), border_color=color.gray, border_width=1)
+
+table.cell(infoTable, 0, 0, "Support Levels", bgcolor=colorSupport, text_color=color.white)
+table.cell(infoTable, 1, 0, str.tostring(array.size(supportLevels)), text_color=color.white)
+
+table.cell(infoTable, 0, 1, "Resistance Levels", bgcolor=colorResistance, text_color=color.white)
+table.cell(infoTable, 1, 1, str.tostring(array.size(resistanceLevels)), text_color=color.white)
+
+table.cell(infoTable, 0, 2, "Flip Levels", bgcolor=colorFlip, text_color=color.white)
+table.cell(infoTable, 1, 2, str.tostring(array.size(flipLevels)), text_color=color.white)
+
+table.cell(infoTable, 0, 3, "Major High", bgcolor=colorMajorHigh, text_color=color.white)
+table.cell(infoTable, 1, 3, str.tostring(majorSwingHighPrice, format.price), text_color=color.white)
+
+table.cell(infoTable, 0, 4, "Major Low", bgcolor=colorMajorLow, text_color=color.white)
+table.cell(infoTable, 1, 4, str.tostring(majorSwingLowPrice, format.price), text_color=color.white)
