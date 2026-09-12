@@ -1,0 +1,267 @@
+//@version=5
+indicator("Layer 2: Market Direction & HTF Bias", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// ============================================================================
+// LAYER 2: MARKET DIRECTION & HTF BIAS ANALYSIS
+// ============================================================================
+// Purpose: Determine WHERE is the market going?
+// - Storyline (Bullish/Bearish/Neutral)
+// - HTF Bias (dominant directional tendency)
+// - MTF Direction Analysis (Weekly, Daily, H4, H1)
+// - Roadblocks (Major structural barriers)
+// ============================================================================
+
+// ============================================================================
+// INPUT PARAMETERS
+// ============================================================================
+
+// Direction Detection
+shortMA = input.int(9, title="Short MA Length", minval=5, maxval=50)
+mediumMA = input.int(21, title="Medium MA Length", minval=10, maxval=100)
+longMA = input.int(50, title="Long MA Length", minval=20, maxval=200)
+
+// Roadblock Detection
+roadblockLength = input.int(20, title="Roadblock Detection Length", minval=10, maxval=50)
+minRoadblockSize = input.float(100, title="Minimum Roadblock Size (pips)", minval=50)
+
+// Display Options
+showMTFAnalysis = input.bool(true, title="Show MTF Direction Panel")
+showRoadblocks = input.bool(true, title="Show Roadblocks on Chart")
+showStoryline = input.bool(true, title="Show Storyline Label")
+showHTFBias = input.bool(true, title="Show HTF Bias Label")
+
+// Colors
+colorBullish = input.color(color.new(color.green, 60), title="Bullish Color")
+colorBearish = input.color(color.new(color.red, 60), title="Bearish Color")
+colorNeutral = input.color(color.new(color.gray, 60), title="Neutral Color")
+colorRoadblock = input.color(color.new(color.orange, 70), title="Roadblock Color")
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+// Determine direction based on price vs MAs
+f_getDirection(sma, mma, lma, cl) =>
+    if cl > sma and sma > mma and mma > lma
+        "Bullish"
+    else if cl < sma and sma < mma and mma < lma
+        "Bearish"
+    else
+        "Neutral"
+
+// Get color based on direction
+f_getDirectionColor(direction) =>
+    direction == "Bullish" ? colorBullish : direction == "Bearish" ? colorBearish : colorNeutral
+
+// Detect major swing high (roadblock resistance)
+f_detectRoadblockHigh(len) =>
+    high[len] == ta.highest(len * 2 + 1)
+
+// Detect major swing low (roadblock support)
+f_detectRoadblockLow(len) =>
+    low[len] == ta.lowest(len * 2 + 1)
+
+// Get pip value
+f_getPipValue() =>
+    syminfo.type == "forex" ? syminfo.pointvalue * 10 : 1
+
+// ============================================================================
+// REQUEST MULTI-TIMEFRAME DATA
+// ============================================================================
+
+// Weekly Direction
+closeW = request.security(syminfo.tickerid, "W", close)
+closeD = request.security(syminfo.tickerid, "D", close)
+closeH4 = request.security(syminfo.tickerid, "240", close)
+closeH1 = request.security(syminfo.tickerid, "60", close)
+
+smaW = request.security(syminfo.tickerid, "W", ta.sma(close, shortMA))
+mmaW = request.security(syminfo.tickerid, "W", ta.sma(close, mediumMA))
+lmaW = request.security(syminfo.tickerid, "W", ta.sma(close, longMA))
+
+// Daily Direction
+smaD = request.security(syminfo.tickerid, "D", ta.sma(close, shortMA))
+mmaD = request.security(syminfo.tickerid, "D", ta.sma(close, mediumMA))
+lmaD = request.security(syminfo.tickerid, "D", ta.sma(close, longMA))
+
+// H4 Direction
+smaH4 = request.security(syminfo.tickerid, "240", ta.sma(close, shortMA))
+mmaH4 = request.security(syminfo.tickerid, "240", ta.sma(close, mediumMA))
+lmaH4 = request.security(syminfo.tickerid, "240", ta.sma(close, longMA))
+
+// H1 Direction
+smaH1 = request.security(syminfo.tickerid, "60", ta.sma(close, shortMA))
+mmaH1 = request.security(syminfo.tickerid, "60", ta.sma(close, mediumMA))
+lmaH1 = request.security(syminfo.tickerid, "60", ta.sma(close, longMA))
+
+// ============================================================================
+// CALCULATE DIRECTIONS FOR EACH TIMEFRAME
+// ============================================================================
+
+directionW = f_getDirection(smaW, mmaW, lmaW, closeW)
+directionD = f_getDirection(smaD, mmaD, lmaD, closeD)
+directionH4 = f_getDirection(smaH4, mmaH4, lmaH4, closeH4)
+directionH1 = f_getDirection(smaH1, mmaH1, lmaH1, closeH1)
+
+// ============================================================================
+// DETERMINE STORYLINE & HTF BIAS
+// ============================================================================
+
+// Count bullish/bearish timeframes
+bullishCount = (directionW == "Bullish" ? 1 : 0) + (directionD == "Bullish" ? 1 : 0) + (directionH4 == "Bullish" ? 1 : 0) + (directionH1 == "Bullish" ? 1 : 0)
+bearishCount = (directionW == "Bearish" ? 1 : 0) + (directionD == "Bearish" ? 1 : 0) + (directionH4 == "Bearish" ? 1 : 0) + (directionH1 == "Bearish" ? 1 : 0)
+
+// Overall Storyline (majority rule)
+storyline = bullishCount > bearishCount ? "Bullish" : bearishCount > bullishCount ? "Bearish" : "Neutral"
+
+// HTF Bias (priority: W > D > H4, ignoring H1 as it's intraday)
+htfBias = directionW == "Bullish" or directionD == "Bullish" or directionH4 == "Bullish" ? 
+          (directionW == "Bearish" or directionD == "Bearish" or directionH4 == "Bearish" ? "Neutral" : "Bullish") : 
+          (directionW == "Bearish" or directionD == "Bearish" or directionH4 == "Bearish" ? "Bearish" : "Neutral")
+
+// ============================================================================
+// ROADBLOCK DETECTION (Current Timeframe)
+// ============================================================================
+
+var array<float> roadblockHigh = array.new<float>()
+var array<float> roadblockLow = array.new<float>()
+var array<int> roadblockBarHigh = array.new<int>()
+var array<int> roadblockBarLow = array.new<int>()
+
+pipValue = f_getPipValue()
+minRoadblockPips = minRoadblockSize * pipValue
+
+// Detect and store roadblock highs
+if f_detectRoadblockHigh(roadblockLength)
+    currentHigh = high[roadblockLength]
+    // Check if significantly higher than previous roadblocks
+    if array.size(roadblockHigh) == 0 or (currentHigh - array.get(roadblockHigh, array.size(roadblockHigh) - 1) > minRoadblockPips)
+        array.push(roadblockHigh, currentHigh)
+        array.push(roadblockBarHigh, bar_index - roadblockLength)
+
+// Detect and store roadblock lows
+if f_detectRoadblockLow(roadblockLength)
+    currentLow = low[roadblockLength]
+    // Check if significantly lower than previous roadblocks
+    if array.size(roadblockLow) == 0 or (array.get(roadblockLow, array.size(roadblockLow) - 1) - currentLow > minRoadblockPips)
+        array.push(roadblockLow, currentLow)
+        array.push(roadblockBarLow, bar_index - roadblockLength)
+
+// ============================================================================
+// VISUALIZATION
+// ============================================================================
+
+// Draw Roadblock Highs (Resistance Barriers)
+if showRoadblocks and array.size(roadblockHigh) > 0
+    // Show last 3 roadblock highs
+    startIdx = math.max(0, array.size(roadblockHigh) - 3)
+    for i = startIdx to array.size(roadblockHigh) - 1
+        level = array.get(roadblockHigh, i)
+        barNum = array.get(roadblockBarHigh, i)
+        line.new(barNum, level, bar_index, level, extend=extend.right, color=colorRoadblock, width=2, style=line.style_dotted)
+
+// Draw Roadblock Lows (Support Barriers)
+if showRoadblocks and array.size(roadblockLow) > 0
+    // Show last 3 roadblock lows
+    startIdx = math.max(0, array.size(roadblockLow) - 3)
+    for i = startIdx to array.size(roadblockLow) - 1
+        level = array.get(roadblockLow, i)
+        barNum = array.get(roadblockBarLow, i)
+        line.new(barNum, level, bar_index, level, extend=extend.right, color=colorRoadblock, width=2, style=line.style_dotted)
+
+// Draw Storyline Label
+if showStoryline
+    storylineColor = f_getDirectionColor(storyline)
+    label.new(bar_index, high + (high - low) * 0.08, "Storyline: " + storyline, 
+              color=storylineColor, style=label.style_label_center, textcolor=color.white, size=size.large)
+
+// Draw HTF Bias Label
+if showHTFBias
+    biasColor = f_getDirectionColor(htfBias)
+    label.new(bar_index, high + (high - low) * 0.12, "HTF Bias: " + htfBias, 
+              color=biasColor, style=label.style_label_center, textcolor=color.white, size=size.large)
+
+// ============================================================================
+// MTF ANALYSIS DASHBOARD TABLE
+// ============================================================================
+
+if showMTFAnalysis
+    var table mtfTable = table.new(position=position.top_left, columns=2, rows=7, 
+                                    bgcolor=color.new(color.black, 80), 
+                                    border_color=color.gray, border_width=1)
+    
+    // Header
+    table.cell(mtfTable, 0, 0, "Timeframe", bgcolor=color.gray, text_color=color.white, text_size=size.small)
+    table.cell(mtfTable, 1, 0, "Direction", bgcolor=color.gray, text_color=color.white, text_size=size.small)
+    
+    // Weekly
+    colorW = f_getDirectionColor(directionW)
+    table.cell(mtfTable, 0, 1, "Weekly", bgcolor=color.new(color.black, 80), text_color=color.white, text_size=size.small)
+    table.cell(mtfTable, 1, 1, directionW, bgcolor=colorW, text_color=color.white, text_size=size.small)
+    
+    // Daily
+    colorD = f_getDirectionColor(directionD)
+    table.cell(mtfTable, 0, 2, "Daily", bgcolor=color.new(color.black, 80), text_color=color.white, text_size=size.small)
+    table.cell(mtfTable, 1, 2, directionD, bgcolor=colorD, text_color=color.white, text_size=size.small)
+    
+    // H4
+    colorH4 = f_getDirectionColor(directionH4)
+    table.cell(mtfTable, 0, 3, "H4", bgcolor=color.new(color.black, 80), text_color=color.white, text_size=size.small)
+    table.cell(mtfTable, 1, 3, directionH4, bgcolor=colorH4, text_color=color.white, text_size=size.small)
+    
+    // H1
+    colorH1 = f_getDirectionColor(directionH1)
+    table.cell(mtfTable, 0, 4, "H1", bgcolor=color.new(color.black, 80), text_color=color.white, text_size=size.small)
+    table.cell(mtfTable, 1, 4, directionH1, bgcolor=colorH1, text_color=color.white, text_size=size.small)
+    
+    // Storyline
+    colorStory = f_getDirectionColor(storyline)
+    table.cell(mtfTable, 0, 5, "Storyline", bgcolor=color.new(color.black, 80), text_color=color.white, text_size=size.small)
+    table.cell(mtfTable, 1, 5, storyline, bgcolor=colorStory, text_color=color.white, text_size=size.small)
+    
+    // HTF Bias
+    colorBias = f_getDirectionColor(htfBias)
+    table.cell(mtfTable, 0, 6, "HTF Bias", bgcolor=color.new(color.black, 80), text_color=color.white, text_size=size.small)
+    table.cell(mtfTable, 1, 6, htfBias, bgcolor=colorBias, text_color=color.white, text_size=size.small)
+
+// ============================================================================
+// ROADBLOCK INFO PANEL (Optional - shows current roadblocks)
+// ============================================================================
+
+var table roadblockTable = table.new(position=position.top_right, columns=2, rows=4, 
+                                      bgcolor=color.new(color.black, 80), 
+                                      border_color=colorRoadblock, border_width=1)
+
+table.cell(roadblockTable, 0, 0, "Roadblocks Info", bgcolor=colorRoadblock, text_color=color.white, text_size=size.small)
+table.cell(roadblockTable, 1, 0, "", text_color=color.white, text_size=size.small)
+
+// Last Roadblock High
+if array.size(roadblockHigh) > 0
+    lastRBHigh = array.get(roadblockHigh, array.size(roadblockHigh) - 1)
+    table.cell(roadblockTable, 0, 1, "Last High Roadblock", bgcolor=color.new(color.black, 80), text_color=color.white, text_size=size.small)
+    table.cell(roadblockTable, 1, 1, str.tostring(lastRBHigh, format.price), text_color=color.white, text_size=size.small)
+else
+    table.cell(roadblockTable, 0, 1, "Last High Roadblock", bgcolor=color.new(color.black, 80), text_color=color.white, text_size=size.small)
+    table.cell(roadblockTable, 1, 1, "N/A", text_color=color.white, text_size=size.small)
+
+// Last Roadblock Low
+if array.size(roadblockLow) > 0
+    lastRBLow = array.get(roadblockLow, array.size(roadblockLow) - 1)
+    table.cell(roadblockTable, 0, 2, "Last Low Roadblock", bgcolor=color.new(color.black, 80), text_color=color.white, text_size=size.small)
+    table.cell(roadblockTable, 1, 2, str.tostring(lastRBLow, format.price), text_color=color.white, text_size=size.small)
+else
+    table.cell(roadblockTable, 0, 2, "Last Low Roadblock", bgcolor=color.new(color.black, 80), text_color=color.white, text_size=size.small)
+    table.cell(roadblockTable, 1, 2, "N/A", text_color=color.white, text_size=size.small)
+
+// Bullish/Bearish Count
+table.cell(roadblockTable, 0, 3, "Bullish/Bearish TF Count", bgcolor=color.new(color.black, 80), text_color=color.white, text_size=size.small)
+table.cell(roadblockTable, 1, 3, str.tostring(bullishCount) + "/" + str.tostring(bearishCount), text_color=color.white, text_size=size.small)
+
+// ============================================================================
+// PLOTTING FOR DEBUGGING (Optional)
+// ============================================================================
+
+// Uncomment to see MA crossovers on current timeframe
+// plot(ta.sma(close, shortMA), color=color.blue, title="SMA 9", linewidth=1)
+// plot(ta.sma(close, mediumMA), color=color.orange, title="SMA 21", linewidth=1)
+// plot(ta.sma(close, longMA), color=color.red, title="SMA 50", linewidth=1)
